@@ -1,0 +1,16 @@
+# crawl output — never commit scraped third-party sites
+站点/
+crawl-*/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# playwright / node leftovers
+node_modules/
+
+# macOS
+.DS_Store

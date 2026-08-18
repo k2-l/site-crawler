@@ -1,0 +1,6 @@
+# Static mode (the default) needs NOTHING here — it uses only the Python stdlib.
+#
+# These are ONLY required for --render (headless-browser) mode:
+playwright>=1.40
+# After installing, download the browser once:
+#   python -m playwright install chromium
