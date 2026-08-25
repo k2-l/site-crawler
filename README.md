@@ -45,6 +45,13 @@ python3 scripts/crawl.py https://example.com
 | `--header "Name: Value"` | 附加请求头（可重复）|
 | `--ignore-robots` | 不遵守 robots.txt（默认遵守）|
 | `--insecure` | 跳过 TLS 证书校验 |
+| `--proxy URL` | 所有请求走该代理（默认直连，忽略环境代理）|
+| `--use-env-proxy` | 沿用 `$HTTP(S)_PROXY` / `$NO_PROXY` 环境变量（默认忽略）|
+
+> **代理说明**：爬虫**默认直连目标并忽略环境里的 `HTTPS_PROXY`**。在 agent / 沙箱环境里，
+> `HTTPS_PROXY` 指向的是 agent 自己的出站代理（给 agent 访问受信任服务用的，不是用来爬任意站的），
+> 若沿用它，抓取目标常会被代理拒绝（407）。需要走代理时用 `--proxy URL`（或 `--proxy "$HTTPS_PROXY"`）；
+> 想恢复旧的"读环境代理"行为用 `--use-env-proxy`。
 
 `--render` 模式需要一次性安装 Playwright：
 

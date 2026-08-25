@@ -125,6 +125,8 @@ third-party scripts (analytics, ads, widgets).
 --user-agent "..."        custom UA string
 --ignore-robots           do NOT obey robots.txt (default: obey it)
 --insecure                skip TLS verification (self-signed certs)
+--proxy URL               route all requests through this proxy (default: direct)
+--use-env-proxy           honor $HTTP(S)_PROXY / $NO_PROXY (default: ignore them)
 ```
 
 The default `--max-pages 500` is a safety valve so a crawl can't run away. If the
@@ -151,6 +153,24 @@ or extensionless page URL is saved as `…/index.html`; query strings are append
 to the filename so distinct pages don't collide. `manifest.json` is the machine-
 readable index of the whole crawl — read it to answer "what did we get?"
 
+## Proxies & agent/sandbox environments
+
+By default the crawler connects **directly to the target and ignores any
+`HTTP(S)_PROXY` / `NO_PROXY` environment variables.** This matters in agent and
+sandbox environments (like Claude Code on the web), where `HTTPS_PROXY` is set
+to the *agent's own* outbound proxy — meant for the agent reaching approved
+services, not for crawling arbitrary sites. If the crawler inherited it, every
+request to the target would tunnel through that proxy and typically come back
+`407`/`403`, failing the whole crawl. So the default is direct, and the run
+header prints which path it took (`Proxy : direct (env ignored)`).
+
+- **Need to go through a proxy** (e.g. the sandbox's proxy is the *only* egress,
+  or you're behind a corporate proxy): pass it explicitly —
+  `--proxy http://host:3128`, or reuse the environment's value with
+  `--proxy "$HTTPS_PROXY"`. This applies to static fetches, JS, robots.txt, and
+  `--render` (Playwright) alike.
+- **Want the old "honor the environment" behavior**: `--use-env-proxy`.
+
 ## Being a good citizen (and staying legal)
 
 Only crawl sites the user owns or is authorized to crawl. The tool defaults to
@@ -173,6 +193,11 @@ don't try to evade bot-protection, just tell the user what's happening.
 - **`CERTIFICATE_VERIFY_FAILED`** → add `--insecure` (only for sites you trust).
 - **Too much third-party JS** → add `--js-scope same-domain`.
 - **Only want one section** → add `--path-prefix /path/`.
+- **Everything returns `407`, or traffic goes through an unexpected proxy** →
+  you're in a proxied environment. The crawler now goes **direct by default**;
+  only pass `--proxy` if the target genuinely needs one. If direct egress is
+  blocked and the sandbox proxy is your only way out, use
+  `--proxy "$HTTPS_PROXY"`.
 
 ## Extending
 

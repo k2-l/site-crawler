@@ -8,6 +8,11 @@ URL's host (same-domain). Fetching is done with plain HTTP (Python stdlib only);
 pass --render to drive a headless browser (Playwright) so JS-rendered / SPA pages
 and dynamically loaded scripts are captured too.
 
+By default the crawler connects DIRECTLY to the target and ignores any
+HTTP(S)_PROXY environment variables (so it won't silently tunnel through an
+agent/sandbox proxy meant for other traffic). Use --proxy URL to route through
+a proxy, or --use-env-proxy to honor the environment's proxy variables.
+
 Static mode needs NO third-party packages. Render mode needs:
     pip install playwright && python -m playwright install chromium
 
@@ -38,7 +43,8 @@ from html.parser import HTMLParser
 from urllib import robotparser
 from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlparse, urlunparse, unquote
-from urllib.request import Request, urlopen
+from urllib.request import (Request, build_opener,
+                            ProxyHandler, HTTPSHandler)
 
 # --- what counts as what -----------------------------------------------------
 
@@ -205,6 +211,32 @@ class Crawler:
         if args.cookie:
             self.headers["Cookie"] = args.cookie
 
+        # -- proxy policy -----------------------------------------------------
+        # Default: connect directly and IGNORE env proxy vars (so a crawl never
+        # silently tunnels through an agent/sandbox proxy). --proxy sets one
+        # explicitly; --use-env-proxy restores the "honor $HTTP(S)_PROXY" behavior.
+        if args.proxy:
+            self.proxy_mode = "explicit"
+            self.proxy_url = args.proxy
+            proxies = {"http": args.proxy, "https": args.proxy}
+        elif args.use_env_proxy:
+            self.proxy_mode = "env"
+            self.proxy_url = None
+            proxies = None                      # None -> ProxyHandler() reads env
+        else:
+            self.proxy_mode = "direct"
+            self.proxy_url = None
+            proxies = {}                        # empty dict -> disable all proxies
+
+        handlers = []
+        if proxies is not None:
+            handlers.append(ProxyHandler(proxies))
+        else:
+            handlers.append(ProxyHandler())     # no-arg = read env
+        if self.insecure:
+            handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))
+        self._opener = build_opener(*handlers)
+
         self.visited = set()                    # normalized URLs we've processed
         self.robots = {}                        # (scheme, netloc) -> RobotFileParser|True
         self.manifest = []                      # per-resource records
@@ -246,11 +278,19 @@ class Crawler:
         key = (p.scheme, p.netloc)
         rp = self.robots.get(key)
         if rp is None:
-            rp = robotparser.RobotFileParser()
-            rp.set_url(f"{p.scheme}://{p.netloc}/robots.txt")
-            try:
-                rp.read()
-            except Exception:
+            # Fetch robots.txt through our own opener so it follows the same
+            # proxy policy as every other request (RobotFileParser.read() would
+            # bypass it and hit the env proxy directly).
+            robots_url = f"{p.scheme}://{p.netloc}/robots.txt"
+            r = self.fetch_static(robots_url)
+            if r.body and not r.error:
+                rp = robotparser.RobotFileParser()
+                try:
+                    text = r.body.decode(r.charset or "utf-8", errors="replace")
+                    rp.parse(text.splitlines())
+                except Exception:
+                    rp = True                   # unparsable robots.txt -> allow
+            else:
                 rp = True                       # unreachable robots.txt -> allow
             self.robots[key] = rp
         return True if rp is True else rp.can_fetch(self.user_agent, url)
@@ -302,9 +342,8 @@ class Crawler:
 
     def fetch_static(self, url, _redirects=0):
         req = Request(url, headers=self.headers)
-        ctx = ssl._create_unverified_context() if self.insecure else None
         try:
-            resp = urlopen(req, timeout=self.timeout, context=ctx)
+            resp = self._opener.open(req, timeout=self.timeout)
         except HTTPError as e:
             # urllib follows 301/302/303/307 itself; 308 and stragglers land here.
             if e.code in (301, 302, 303, 307, 308) and _redirects < 6:
@@ -390,7 +429,16 @@ class Crawler:
             sys.exit("Render mode needs Playwright:\n"
                      "    pip install playwright && python -m playwright install chromium")
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
+        launch_kwargs = {"headless": True}
+        # Match the static proxy policy so render mode doesn't leak through the
+        # env proxy either. "direct://" forces a direct connection even if
+        # Chromium would otherwise pick up $HTTP(S)_PROXY.
+        if self.proxy_mode == "direct":
+            launch_kwargs["proxy"] = {"server": "direct://"}
+        elif self.proxy_mode == "explicit":
+            launch_kwargs["proxy"] = {"server": self.proxy_url}
+        # env mode: leave proxy unset -> Playwright/Chromium default behavior
+        self._browser = self._pw.chromium.launch(**launch_kwargs)
         self._ctx = self._browser.new_context(
             user_agent=self.user_agent,
             ignore_https_errors=self.insecure,
@@ -468,6 +516,10 @@ class Crawler:
         print(f"Mode  : {'headless browser (render)' if self.render else 'static'}"
               f"  |  JS scope: {self.js_scope}"
               f"  |  robots: {'respect' if self.respect_robots else 'ignore'}")
+        proxy_desc = {"direct": "direct (env ignored)",
+                      "env": "environment",
+                      "explicit": self.proxy_url}[self.proxy_mode]
+        print(f"Proxy : {proxy_desc}")
         print(f"Output: {self.output_dir}\n")
 
         if self.render:
@@ -575,6 +627,13 @@ def build_parser():
                    help="also extract inline <script> blocks to separate .js files")
     p.add_argument("--insecure", action="store_true",
                    help="skip TLS certificate verification")
+    p.add_argument("--proxy", default=None,
+                   help="route all requests through this proxy, e.g. "
+                        'http://host:3128 or "$HTTPS_PROXY" '
+                        "(default: connect directly)")
+    p.add_argument("--use-env-proxy", action="store_true",
+                   help="honor the HTTP(S)_PROXY / NO_PROXY environment "
+                        "variables (default: ignore them and go direct)")
     return p
 
 
