@@ -79,6 +79,74 @@ def is_html(content_type=""):
     return "text/html" in ct or "application/xhtml" in ct or "text/xml" in ct
 
 
+# --- framework / component fingerprinting ------------------------------------
+
+# High-signal signatures matched against the start page. Each entry:
+#   (name, category, spa, {"html": [...], "src": [...], "hdr": [...]})
+# spa=True marks stacks that render content client-side, so we can recommend
+# (or, with --auto-render, switch to) render mode. A signature fires if ANY of
+# its substrings is found in the matching haystack (all lower-cased).
+STACK_SIGNATURES = [
+    # meta-frameworks (checked before their base lib so they win the label)
+    ("Next.js",       "framework", True,  {"html": ['id="__next"', "__next_data__", "/_next/static"], "src": ["/_next/"], "hdr": ["x-powered-by: next.js", "x-nextjs"]}),
+    ("Nuxt",          "framework", True,  {"html": ["__nuxt__", 'id="__nuxt"', "/_nuxt/"], "src": ["/_nuxt/"]}),
+    ("Gatsby",        "framework", True,  {"html": ['id="___gatsby"', "/page-data/", "gatsby-"], "src": ["/page-data/"]}),
+    ("Remix",         "framework", True,  {"html": ["__remixcontext", "__remixmanifest", "window.__remix"]}),
+    ("SvelteKit",     "framework", True,  {"html": ["__sveltekit", "/_app/immutable"], "src": ["/_app/immutable"]}),
+    ("Astro",         "framework", False, {"html": ["astro-island", "data-astro-"]}),
+    # base UI frameworks
+    ("React",         "framework", True,  {"html": ["data-reactroot", "data-reactid", "__react", "react.production", "react.development"], "src": ["react-dom", "react.production", "react.development", "/react@"]}),
+    ("Vue.js",        "framework", True,  {"html": ["data-v-", "__vue__", "data-server-rendered"], "src": ["vue.runtime", "vue.global", "vue.min.js", "/vue@"]}),
+    ("Angular",       "framework", True,  {"html": ["ng-version", "_nghost", "_ngcontent", "ng-app"], "src": ["@angular", "zone.js", "polyfills."]}),
+    ("Svelte",        "framework", True,  {"html": ["svelte-"], "src": ["svelte"]}),
+    ("Preact",        "framework", True,  {"html": ["preact"], "src": ["preact"]}),
+    ("Ember.js",      "framework", True,  {"html": ['id="ember"', "ember-view", "ember-application"], "src": ["ember"]}),
+    ("Alpine.js",     "framework", False, {"html": ["x-data", "x-bind:", "@click="], "src": ["alpinejs", "alpine.min.js"]}),
+    # component / utility libraries
+    ("jQuery",        "library",   False, {"html": ["jquery"], "src": ["jquery"]}),
+    ("Bootstrap",     "library",   False, {"html": ["bootstrap.min", "bootstrap.bundle"], "src": ["bootstrap.min", "bootstrap.bundle"]}),
+    ("Tailwind CSS",  "library",   False, {"html": ["cdn.tailwindcss.com"], "src": ["cdn.tailwindcss.com"]}),
+    ("Google Tag Mgr","library",   False, {"html": ["googletagmanager.com/gtm"], "src": ["googletagmanager.com/gtm"]}),
+    # build tooling
+    ("webpack",       "bundler",   False, {"html": ["webpackjsonp", "__webpack_require__", "webpackchunk"]}),
+    ("Vite",          "bundler",   False, {"html": ["/@vite/client"], "src": ["/@vite/"]}),
+    # CMS / hosted platforms
+    ("WordPress",     "platform",  False, {"html": ["/wp-content/", "/wp-includes/", "wp-json"], "src": ["/wp-content/", "/wp-includes/"], "hdr": ["x-powered-by: wordpress"]}),
+    ("Shopify",       "platform",  False, {"html": ["cdn.shopify.com", "window.shopify"], "src": ["cdn.shopify.com"], "hdr": ["x-shopify", "x-shopid"]}),
+    ("Wix",           "platform",  False, {"html": ["static.wixstatic.com", "static.parastorage.com"], "src": ["static.parastorage.com"], "hdr": ["x-wix"]}),
+    ("Squarespace",   "platform",  False, {"html": ["static1.squarespace.com", "squarespace.com/universal"], "hdr": ["x-squarespace"]}),
+    ("Drupal",        "platform",  False, {"html": ["/sites/default/files", "drupal.settings", "drupal-"], "hdr": ["x-generator: drupal", "x-drupal"]}),
+    ("Joomla",        "platform",  False, {"html": ["/media/jui/", "/media/system/js/"], "hdr": ["joomla"]}),
+    ("Ghost",         "platform",  False, {"html": ['content="ghost', "ghost-url"]}),
+]
+
+_GENERATOR_RE = re.compile(
+    r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']([^"\']+)["\']', re.I)
+
+
+def detect_stack(html, headers, script_srcs):
+    """Fingerprint the frameworks / components / platform behind the start page.
+    Returns (names, spa, generator): an ordered unique list of detected tech, a
+    bool for 'client-rendered stack seen', and the <meta generator> value if any.
+    """
+    html_l = (html or "").lower()
+    src_l = " ".join(script_srcs or []).lower()
+    hdr_l = "\n".join(f"{k}: {v}".lower() for k, v in (headers or {}).items())
+    haystacks = {"html": html_l, "src": src_l, "hdr": hdr_l}
+
+    names, spa = [], False
+    for name, _cat, is_spa, sig in STACK_SIGNATURES:
+        for where, needles in sig.items():
+            if any(n in haystacks[where] for n in needles):
+                names.append(name)
+                spa = spa or is_spa
+                break
+
+    m = _GENERATOR_RE.search(html or "")
+    generator = m.group(1).strip() if m else None
+    return names, spa, generator
+
+
 def normalize(url):
     """Strip the fragment and give a bare host the root path.
 
@@ -166,15 +234,17 @@ class LinkExtractor(HTMLParser):
 # --- one fetched resource ----------------------------------------------------
 
 class Fetched:
-    __slots__ = ("url", "status", "content_type", "body", "charset", "error")
+    __slots__ = ("url", "status", "content_type", "body", "charset", "error",
+                 "headers")
 
     def __init__(self, url, status=None, content_type="", body=b"",
-                 charset=None, error=None):
+                 charset=None, error=None, headers=None):
         self.url = url
         self.status = status
         self.content_type = content_type
         self.body = body
         self.charset = charset
+        self.headers = headers or {}
         self.error = error
 
 
@@ -206,6 +276,11 @@ class Crawler:
         # infinite-scroll pages.
         self.autoscroll = not args.no_autoscroll
         self.scroll_max_passes = args.scroll_passes
+        # Fingerprint the site's framework/components before crawling; with
+        # --auto-render, a client-rendered stack flips the crawl into render mode.
+        self.auto_render = args.auto_render
+        self.stack = []
+        self.generator = None
 
         self.headers = {"User-Agent": self.user_agent,
                         "Accept": "text/html,application/xhtml+xml,*/*"}
@@ -371,7 +446,8 @@ class Crawler:
             pass
         return Fetched(resp.geturl(), status=getattr(resp, "status", 200),
                        content_type=resp.headers.get_content_type(),
-                       body=raw, charset=resp.headers.get_content_charset())
+                       body=raw, charset=resp.headers.get_content_charset(),
+                       headers={k.lower(): v for k, v in resp.headers.items()})
 
     # -- per-page handling ----------------------------------------------------
 
@@ -555,19 +631,56 @@ class Crawler:
 
     # -- main loop ------------------------------------------------------------
 
+    def fingerprint(self):
+        """Fetch the start page once and identify its framework/components, so
+        the crawl (and the user) knows what it's dealing with up front. Fills
+        self.stack / self.generator and, with --auto-render, may enable render."""
+        r = self.fetch_static(self.start)
+        if r.error or not r.body:
+            print("Stack : (start page unreachable — skipped fingerprinting)\n")
+            return
+        html = r.body.decode(r.charset or "utf-8", errors="replace")
+        parser = LinkExtractor()
+        try:
+            parser.feed(html)
+        except Exception:
+            pass
+        self.stack, spa, self.generator = detect_stack(html, r.headers,
+                                                        parser.script_srcs)
+
+        label = " · ".join(self.stack) if self.stack else "(no known framework detected)"
+        if self.generator:
+            label += f"   generator={self.generator}"
+        print(f"Stack : {label}")
+
+        # A client-rendered framework loads its real content/JS at runtime, so
+        # static fetching would miss chunks. Recommend or auto-enable render.
+        # (Unknown-framework empty shells are still caught mid-crawl by the
+        # spa_suspect detector, which needs several pages to avoid false alarms.)
+        if spa and not self.render:
+            if self.auto_render:
+                self.render = True
+                print("      → client-rendered; --auto-render is switching to "
+                      "render mode.")
+            else:
+                print("      → client-rendered; add --render to capture "
+                      "JS-rendered content and lazy chunks.")
+        print()
+
     def run(self):
         os.makedirs(self.output_dir, exist_ok=True)
         print(f"Start : {self.start}")
         print(f"Scope : {self.base_host}"
               + (" +subdomains" if self.include_subdomains else "")
               + (f"  prefix={self.path_prefix}" if self.path_prefix else ""))
-        print(f"Mode  : {'headless browser (render)' if self.render else 'static'}"
-              f"  |  JS scope: {self.js_scope}"
-              f"  |  robots: {'respect' if self.respect_robots else 'ignore'}")
         proxy_desc = {"direct": "direct (env ignored)",
                       "env": "environment",
                       "explicit": self.proxy_url}[self.proxy_mode]
         print(f"Proxy : {proxy_desc}")
+        self.fingerprint()      # may flip self.render before we print the mode
+        print(f"Mode  : {'headless browser (render)' if self.render else 'static'}"
+              f"  |  JS scope: {self.js_scope}"
+              f"  |  robots: {'respect' if self.respect_robots else 'ignore'}")
         print(f"Output: {self.output_dir}\n")
 
         if self.render:
@@ -608,6 +721,8 @@ class Crawler:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "mode": "render" if self.render else "static",
             "base_host": self.base_host,
+            "stack": self.stack,
+            "generator": self.generator,
             "include_subdomains": self.include_subdomains,
             "path_prefix": self.path_prefix,
             "js_scope": self.js_scope,
@@ -687,6 +802,9 @@ def build_parser():
                         "JS (default: scroll to capture on-demand chunks)")
     p.add_argument("--scroll-passes", type=int, default=20,
                    help="render mode: max scroll steps per page (default: 20)")
+    p.add_argument("--auto-render", action="store_true",
+                   help="auto-switch to render mode when the start page "
+                        "fingerprints as a client-rendered (SPA) framework")
     return p
 
 

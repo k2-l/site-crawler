@@ -9,6 +9,7 @@
 
 - **只存 HTML + JS**，CSS / 图片 / 字体 / 音视频 / PDF / 压缩包等按扩展名在请求前就跳过，不浪费带宽。
 - **默认仅同域名**，可 `--include-subdomains` 扩到子域，或 `--path-prefix /docs/` 限定某板块。
+- **抓取前先识别技术栈**：拉起始页做指纹识别（框架 React/Vue/Angular/Next/Nuxt…、库 jQuery/Bootstrap、打包器 webpack/Vite、CMS WordPress/Shopify/Wix…），打印 `Stack:` 并写入 `manifest.json`；识别为 SPA 时提示（或 `--auto-render` 自动切）用渲染模式。
 - **静态优先，可切换无头浏览器**：默认用纯 HTTP 抓取（适合传统/SSR 站点），SPA/动态站加 `--render` 用 Playwright 渲染后再抓，并**自动滚动页面触发懒加载 JS**，拿到运行时/按需加载的 chunk。
 - **礼貌合规**：默认遵守 `robots.txt`、`--delay` 限速、诚实 UA；支持 `--cookie` / `--header` 抓登录区。
 - **静态模式零第三方依赖**（纯 Python 标准库），开箱即用。
@@ -49,6 +50,7 @@ python3 scripts/crawl.py https://example.com
 | `--use-env-proxy` | 沿用 `$HTTP(S)_PROXY` / `$NO_PROXY` 环境变量（默认忽略）|
 | `--no-autoscroll` | render 模式：不自动滚动触发懒加载 JS（默认滚动）|
 | `--scroll-passes N` | render 模式：每页最大滚动步数（默认 20）|
+| `--auto-render` | 指纹识别为 SPA 时自动切换到渲染模式 |
 
 > **代理说明**：爬虫**默认直连目标并忽略环境里的 `HTTPS_PROXY`**。在 agent / 沙箱环境里，
 > `HTTPS_PROXY` 指向的是 agent 自己的出站代理（给 agent 访问受信任服务用的，不是用来爬任意站的），

@@ -42,6 +42,17 @@ run it from the project directory and do **not** pass `-o` — the default alrea
 targets the `站点/` folder there. Only pass `-o` if the user explicitly asks to
 save somewhere else.
 
+## Framework detection (runs first)
+
+Before crawling, the tool fetches the start page once and **fingerprints the
+site's stack** — framework (React, Vue, Angular, Svelte, Next/Nuxt/Gatsby…),
+libraries (jQuery, Bootstrap…), bundler (webpack, Vite), and CMS/platform
+(WordPress, Shopify, Wix…) — from the HTML, response headers, `<meta generator>`
+and script URLs. It prints a `Stack :` line and records it in `manifest.json`.
+If the start page fingerprints as a **client-rendered framework**, the tool says
+so and suggests `--render`; pass `--auto-render` to let it switch to render mode
+automatically in that case.
+
 ## Choosing the mode
 
 **Start with static** (the default). It's fast, dependency-free, and correct for
@@ -130,6 +141,7 @@ third-party scripts (analytics, ads, widgets).
 --use-env-proxy           honor $HTTP(S)_PROXY / $NO_PROXY (default: ignore them)
 --no-autoscroll           render mode: don't scroll to trigger lazy-loaded JS
 --scroll-passes N         render mode: max scroll steps per page (default 20)
+--auto-render             switch to render mode if the site fingerprints as a SPA
 ```
 
 The default `--max-pages 500` is a safety valve so a crawl can't run away. If the
