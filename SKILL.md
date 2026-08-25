@@ -2,16 +2,14 @@
 name: site-crawler
 description: >-
   Crawl a website and download every HTML page and JavaScript source file it
-  serves, deliberately skipping CSS, images, fonts, audio/video and other media.
-  Use this whenever the user wants to mirror, archive, scrape, clone, or bulk-
-  download a site's pages and/or its JS — including phrasings like "爬取这个站点",
-  "把整个网站爬下来", "抓取所有页面和JS", "镜像网站", "克隆网站源码", "download all the
-  pages", "mirror this site", "grab every page and script", "pull the site's
-  JavaScript", or "scrape the whole domain". Handles same-domain crawling,
-  static fetching or headless-browser (SPA/JS-rendered) rendering, robots.txt,
-  rate limiting, subdomains, path scoping, and auth cookies/headers. Reach for
-  this skill even when the user doesn't say the word "crawler" but clearly wants
-  a site's pages or scripts saved to disk in bulk.
+  serves, skipping CSS, images, fonts, and other media. Use whenever the user
+  wants to mirror, archive, scrape, clone, or bulk-download a site's pages and/or
+  its JS — e.g. "爬取/镜像这个站点", "抓取所有页面和JS", "克隆网站源码", "mirror this
+  site", "grab every page and script", "pull the site's JavaScript". Handles
+  same-domain crawling, static or headless-browser (SPA/JS-rendered, lazy-loaded
+  JS) fetching, robots.txt, rate limiting, subdomains, path scoping, auth
+  cookies/headers, and proxy control. Reach for it even when the user doesn't say
+  "crawler" but clearly wants a site's pages or scripts saved to disk in bulk.
 ---
 
 # site-crawler
@@ -65,11 +63,14 @@ switch:
 python3 scripts/crawl.py https://app.example.com --render
 ```
 
-`--render` drives headless Chromium: it waits for the network to settle, saves
-the *rendered* DOM, follows links found in the live page, and captures **every**
-JavaScript response the browser actually loaded (including code-split chunks and
-dynamically injected scripts that static parsing can't see). It's slower and
-needs a one-time setup:
+`--render` drives headless Chromium: it waits for the network to settle, then
+**auto-scrolls each page** so lazy-loaded JS (IntersectionObserver imports,
+infinite scroll, on-demand chunks) actually fires, saves the *rendered* DOM,
+follows links found in the live page, and captures **every** JavaScript response
+the browser loaded — code-split chunks and dynamically injected scripts static
+parsing can't see. Auto-scroll is on by default (`--no-autoscroll` to disable,
+`--scroll-passes N` to cap steps on infinite-scroll pages). It's slower and needs
+a one-time setup:
 
 ```bash
 pip install playwright && python3 -m playwright install chromium
@@ -127,6 +128,8 @@ third-party scripts (analytics, ads, widgets).
 --insecure                skip TLS verification (self-signed certs)
 --proxy URL               route all requests through this proxy (default: direct)
 --use-env-proxy           honor $HTTP(S)_PROXY / $NO_PROXY (default: ignore them)
+--no-autoscroll           render mode: don't scroll to trigger lazy-loaded JS
+--scroll-passes N         render mode: max scroll steps per page (default 20)
 ```
 
 The default `--max-pages 500` is a safety valve so a crawl can't run away. If the
@@ -185,6 +188,10 @@ don't try to evade bot-protection, just tell the user what's happening.
 
 - **Pages are nearly empty / content missing** → it's a SPA. Re-run with
   `--render`.
+- **Some JS still missing under `--render`** → it loads on interaction beyond a
+  scroll (click/hover/route change). Auto-scroll catches scroll/intersection
+  chunks; raise `--scroll-passes` for very long pages, and make sure the routes
+  that load those chunks are reachable as links so the crawler visits them.
 - **`Render mode needs Playwright`** → run the pip/playwright install above.
 - **Lots of `HTTP 403`/`401`** → needs login. Pass the session cookie via
   `--cookie "sessionid=…"` (get it from the browser dev tools), or an auth token

@@ -201,6 +201,11 @@ class Crawler:
         self.respect_robots = not args.ignore_robots
         self.include_inline_js = args.include_inline_js
         self.user_agent = args.user_agent
+        # In render mode, scroll the page after load so scroll/intersection-
+        # triggered lazy chunks fire and get captured. Capped to stay sane on
+        # infinite-scroll pages.
+        self.autoscroll = not args.no_autoscroll
+        self.scroll_max_passes = args.scroll_passes
 
         self.headers = {"User-Agent": self.user_agent,
                         "Accept": "text/html,application/xhtml+xml,*/*"}
@@ -431,13 +436,16 @@ class Crawler:
         self._pw = sync_playwright().start()
         launch_kwargs = {"headless": True}
         # Match the static proxy policy so render mode doesn't leak through the
-        # env proxy either. "direct://" forces a direct connection even if
-        # Chromium would otherwise pick up $HTTP(S)_PROXY.
-        if self.proxy_mode == "direct":
-            launch_kwargs["proxy"] = {"server": "direct://"}
-        elif self.proxy_mode == "explicit":
+        # env proxy either.
+        if self.proxy_mode == "explicit":
             launch_kwargs["proxy"] = {"server": self.proxy_url}
-        # env mode: leave proxy unset -> Playwright/Chromium default behavior
+        elif self.proxy_mode == "env":
+            envp = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                    or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
+            if envp:
+                launch_kwargs["proxy"] = {"server": envp}
+        else:  # direct: hard-disable any proxy so Chromium connects straight out
+            launch_kwargs["args"] = ["--no-proxy-server"]
         self._browser = self._pw.chromium.launch(**launch_kwargs)
         self._ctx = self._browser.new_context(
             user_agent=self.user_agent,
@@ -466,6 +474,44 @@ class Crawler:
         except Exception:
             pass
 
+    def _autoscroll(self, page):
+        """Scroll to the bottom in viewport-sized steps, waiting for the network
+        to settle at each step, so lazy chunks (IntersectionObserver, infinite
+        scroll, on-demand imports) load and get caught by the response listener.
+        Capped at scroll_max_passes so infinite-scroll pages can't run away."""
+        try:
+            step = page.evaluate("window.innerHeight") or 800
+        except Exception:
+            step = 800
+        last_y = -1
+        for _ in range(self.scroll_max_passes):
+            try:
+                page.evaluate("(y) => window.scrollBy(0, y)", step)
+            except Exception:
+                break
+            # Give IntersectionObserver / scroll handlers a frame to fire and
+            # kick off their requests *before* we wait for the network to idle;
+            # without this pause networkidle resolves before they even start.
+            try:
+                page.wait_for_timeout(250)
+                page.wait_for_load_state("networkidle", timeout=self.timeout * 1000)
+            except Exception:
+                pass
+            try:
+                y = page.evaluate("window.scrollY")
+                at_bottom = page.evaluate(
+                    "(window.innerHeight + window.scrollY) >= "
+                    "((document.body && document.body.scrollHeight) || 0) - 2")
+            except Exception:
+                break
+            if at_bottom or y == last_y:
+                break
+            last_y = y
+        try:
+            page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
+
     def render_page(self, url, depth, queue):
         page = self._ctx.new_page()
 
@@ -487,6 +533,8 @@ class Crawler:
                 page.wait_for_load_state("load", timeout=self.timeout * 1000)
             except Exception:
                 pass
+        if self.autoscroll:
+            self._autoscroll(page)      # trigger scroll/intersection lazy loads
         try:
             html = page.content()
             hrefs = page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
@@ -634,6 +682,11 @@ def build_parser():
     p.add_argument("--use-env-proxy", action="store_true",
                    help="honor the HTTP(S)_PROXY / NO_PROXY environment "
                         "variables (default: ignore them and go direct)")
+    p.add_argument("--no-autoscroll", action="store_true",
+                   help="render mode: do NOT scroll pages to trigger lazy-loaded "
+                        "JS (default: scroll to capture on-demand chunks)")
+    p.add_argument("--scroll-passes", type=int, default=20,
+                   help="render mode: max scroll steps per page (default: 20)")
     return p
 
 
